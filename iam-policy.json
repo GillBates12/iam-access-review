@@ -1,0 +1,20 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadCredentialReport",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GenerateCredentialReport",
+        "iam:GetCredentialReport"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "SendReport",
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:REGION:ACCOUNT_ID:iam-access-review"
+    }
+  ]
+}

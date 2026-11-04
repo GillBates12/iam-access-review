@@ -1,0 +1,151 @@
+name: terraform
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "lambda_function.py"
+      - ".github/workflows/terraform.yml"
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - "lambda_function.py"
+      - ".github/workflows/terraform.yml"
+
+permissions:
+  contents: read
+
+# Never run two Terraform jobs against the same state at once.
+concurrency:
+  group: terraform
+  cancel-in-progress: false
+
+env:
+  TF_VAR_region: ${{ vars.AWS_REGION }}
+  TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.16.0"
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init
+        run: >
+          terraform init -input=false
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        run: |
+          terraform plan -input=false -no-color -out=tfplan
+          terraform show -no-color tfplan > plan.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plan
+          path: terraform/plan.txt
+          retention-days: 7
+
+  review:
+    if: github.event_name == 'pull_request'
+    needs: plan
+    runs-on: ubuntu-latest
+    # No AWS credentials in this job: Claude reads and comments, nothing else.
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: plan
+          path: plan
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are reviewing a pull request for a small AWS project: a Lambda
+            function that emails a weekly report of stale IAM credentials,
+            deployed with Terraform.
+
+            1. Read the Terraform plan in plan/plan.txt.
+            2. Read the code changes with `gh pr diff`.
+            3. Check for, most important first:
+               - IAM permissions broader than needed (new wildcards, missing
+                 resource scoping, anything that could let a role grant itself
+                 more access)
+               - Resources the plan will destroy or replace
+               - Anything made public, or secrets/account details committed
+               - Bugs in lambda_function.py
+            4. Post exactly ONE comment with `gh pr comment`. Start with a one-line
+               verdict ("Looks safe to merge" or "Needs changes"), then a short
+               list of findings with the file name, most severe first. If there's
+               nothing wrong, say so in one or two sentences. Skip style nitpicks.
+          claude_args: |
+            --allowedTools "Read,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
+
+  apply:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.16.0"
+          terraform_wrapper: false
+
+      - name: Init
+        run: >
+          terraform init -input=false
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: Apply
+        run: terraform apply -input=false -auto-approve

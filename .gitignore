@@ -2,3 +2,11 @@
 *.csv
 __pycache__/
 .DS_Store
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+plan.txt
+terraform/build/
+*.tfvars
